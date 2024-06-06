@@ -1,82 +1,100 @@
-use iced::{
-    widget::{column, container, text, text_input},
-    Application, Command, Element, Length, Settings, Theme,
+use druid::{
+    widget::{
+        prelude::{Env, Event, EventCtx},
+        Controller, CrossAxisAlignment, Flex, List, RawLabel, TextBox,
+    },
+    AppDelegate, AppLauncher, Code, Command, Data, DelegateCtx, Handled, KeyEvent, Lens, Selector,
+    Target, Widget, WidgetExt, WindowDesc,
 };
 use regex::Regex;
 use std::{
     cmp::Ordering,
     process::{self, Stdio},
+    sync::Arc,
 };
 
-fn main() -> iced::Result {
-    HelloWorld::run(Settings::default())
+fn main() {
+    let main_window = WindowDesc::new(ui_builder()).title("Iron Pass");
+    let data = AppData {
+        filter: "".into(),
+        items: Arc::new(vec![]),
+    };
+    AppLauncher::with_window(main_window)
+        .delegate(Deletate)
+        .log_to_console()
+        .launch(data)
+        .expect("launch failed");
 }
 
-#[derive(Debug, Clone)]
-enum AppMessage {
-    TextInputChanged(String),
-    ListUpdate(Vec<String>),
-}
+const UPDATE_LIST: Selector = Selector::new("update-list");
 
-#[derive(Default)]
-struct HelloWorld {
-    filter: String,
-    items: Vec<String>,
-}
+struct Deletate;
 
-impl Application for HelloWorld {
-    type Executor = iced::executor::Default;
-    type Message = AppMessage;
-    type Theme = Theme;
-    type Flags = ();
-
-    fn new(_flags: ()) -> (Self, Command<Self::Message>) {
-        (HelloWorld::default(), Command::none())
-    }
-
-    fn title(&self) -> String {
-        String::from("Iron Pass")
-    }
-
-    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
-        match message {
-            AppMessage::TextInputChanged(text) => {
-                self.filter = text.clone();
-                Command::perform(async move { list_pass(text) }, |list| {
-                    AppMessage::ListUpdate(list.unwrap_or_default())
-                })
-            }
-            AppMessage::ListUpdate(items) => {
-                self.items = items;
-                Command::none()
-            }
+impl AppDelegate<AppData> for Deletate {
+    fn command(
+        &mut self,
+        _ctx: &mut DelegateCtx,
+        _target: Target,
+        cmd: &Command,
+        data: &mut AppData,
+        _env: &Env,
+    ) -> Handled {
+        if cmd.is(UPDATE_LIST) {
+            data.items = Arc::new(list_pass(&data.filter).unwrap_or_default());
+            Handled::Yes
+        } else {
+            Handled::No
         }
     }
+}
 
-    fn view(&self) -> Element<Self::Message> {
-        let input = text_input("Enter key...", &self.filter).on_input(AppMessage::TextInputChanged);
+struct TextBoxController;
 
-        let items = self
-            .items
-            .iter()
-            .map(|item| list_item(item))
-            .collect::<Vec<_>>();
-
-        container(column![input, column(items)])
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(20)
-            .into()
+impl<T, W: Widget<T>> Controller<T, W> for TextBoxController {
+    fn event(&mut self, child: &mut W, ctx: &mut EventCtx, event: &Event, data: &mut T, env: &Env) {
+        child.event(ctx, event, data, env);
+        if let Event::KeyUp(KeyEvent {
+            code: Code::Enter, ..
+        }) = event
+        {
+            ctx.submit_command(UPDATE_LIST);
+        }
     }
+}
+
+#[derive(Clone, Data, Lens)]
+struct AppData {
+    filter: String,
+    items: Arc<Vec<String>>,
+}
+
+fn ui_builder() -> impl Widget<AppData> {
+    Flex::column()
+        .cross_axis_alignment(CrossAxisAlignment::Fill)
+        .with_child(
+            TextBox::new()
+                .controller(TextBoxController)
+                .lens(AppData::filter)
+                .expand_width()
+                .padding(10.0),
+        )
+        .with_flex_child(
+            List::new(make_pass_item)
+                .lens(AppData::items)
+                .padding(10.0)
+                .scroll()
+                .vertical(),
+            1.,
+        )
+}
+
+fn make_pass_item() -> impl Widget<String> {
+    RawLabel::new()
 }
 
 fn strip_esc_sequences(input: &str) -> String {
     let re = Regex::new(r"\x1B\[([0-9;]*[mGKH])").unwrap();
     re.replace_all(input, "").to_string()
-}
-
-fn list_item<'a>(title: impl ToString) -> Element<'a, AppMessage> {
-    container(text(title)).padding(5).into()
 }
 
 fn list_pass(filter: impl AsRef<str>) -> Option<Vec<String>> {
