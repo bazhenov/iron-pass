@@ -3,8 +3,8 @@ use druid::{
         prelude::{Env, Event, EventCtx},
         Controller, CrossAxisAlignment, Either, Flex, List, RawLabel, TextBox,
     },
-    AppDelegate, AppLauncher, Code, Color, Command, Data, DelegateCtx, Handled, KeyEvent, Lens,
-    LensExt, Selector, Target, Widget, WidgetExt, WindowDesc,
+    AppDelegate, AppLauncher, Code, Color, Command, Data, DelegateCtx, Handled, Lens, Selector,
+    Target, Widget, WidgetExt, WindowDesc,
 };
 use regex::Regex;
 use std::{
@@ -54,11 +54,15 @@ impl<T: Data> Deref for Selected<T> {
 }
 
 fn main() {
-    let main_window = WindowDesc::new(ui_builder()).title("Iron Pass");
+    let all_items = Arc::new(list_pass("").unwrap_or_default());
+    let main_window = WindowDesc::new(ui_builder())
+        .title("Iron Pass")
+        .with_min_size((300., 600.));
     let data = AppData {
-        filter: "".into(),
-        processed_filter: "".into(),
+        filter: Arc::new("".into()),
+        processed_filter: Arc::new("".into()),
         items: Arc::new(vec![]),
+        all_items,
     };
     AppLauncher::with_window(main_window)
         .delegate(Deletate)
@@ -68,6 +72,7 @@ fn main() {
 }
 
 const UPDATE_LIST: Selector = Selector::new("update-list");
+const COPY_PASS: Selector = Selector::new("copy-pass");
 const SELECT_NEXT: Selector = Selector::new("select_next");
 const SELECT_PREV: Selector = Selector::new("select_prev");
 
@@ -84,15 +89,22 @@ impl AppDelegate<AppData> for Deletate {
     ) -> Handled {
         if cmd.is(UPDATE_LIST) {
             if data.filter != data.processed_filter {
-                let items = list_pass(&data.filter)
-                    .unwrap_or_default()
-                    .into_iter()
+                let items = data
+                    .all_items
+                    .iter()
+                    .cloned()
+                    .filter(|i| i.contains(data.filter.as_ref()))
                     .enumerate()
                     .map(|(idx, value)| (value, idx == 0))
                     .map(Selected::from)
-                    .collect::<Vec<_>>();
+                    .collect();
                 data.items = Arc::new(items);
                 data.processed_filter = data.filter.clone();
+            }
+            Handled::Yes
+        } else if cmd.is(COPY_PASS) {
+            if let Some(selected) = data.items.iter().find(|s| s.is_selected()) {
+                copy_pass(&selected.value).unwrap();
             }
             Handled::Yes
         } else if cmd.is(SELECT_NEXT) {
@@ -129,14 +141,23 @@ impl AppDelegate<AppData> for Deletate {
 
 struct TextBoxController;
 
-impl<T, W: Widget<T>> Controller<T, W> for TextBoxController {
-    fn event(&mut self, child: &mut W, ctx: &mut EventCtx, event: &Event, data: &mut T, env: &Env) {
+impl<W: Widget<Arc<String>>> Controller<Arc<String>, W> for TextBoxController {
+    fn event(
+        &mut self,
+        child: &mut W,
+        ctx: &mut EventCtx,
+        event: &Event,
+        data: &mut Arc<String>,
+        env: &Env,
+    ) {
         child.event(ctx, event, data, env);
         match event {
+            Event::WindowConnected => ctx.set_focus(ctx.widget_id()),
             Event::KeyUp(_) => ctx.submit_command(UPDATE_LIST),
             Event::KeyDown(e) => match e.code {
                 Code::KeyJ if e.mods.ctrl() => ctx.submit_command(SELECT_NEXT),
                 Code::KeyK if e.mods.ctrl() => ctx.submit_command(SELECT_PREV),
+                Code::Enter => ctx.submit_command(COPY_PASS),
                 _ => {}
             },
             _ => {}
@@ -146,9 +167,10 @@ impl<T, W: Widget<T>> Controller<T, W> for TextBoxController {
 
 #[derive(Clone, Data, Lens)]
 struct AppData {
-    filter: String,
-    processed_filter: String,
+    filter: Arc<String>,
+    processed_filter: Arc<String>,
     items: Arc<Vec<Selected<String>>>,
+    all_items: Arc<Vec<String>>,
 }
 
 fn ui_builder() -> impl Widget<AppData> {
@@ -201,6 +223,23 @@ fn list_pass(filter: impl AsRef<str>) -> Option<Vec<String>> {
     } else {
         let output = String::from_utf8(out.stdout).unwrap();
         Some(parse_list(&strip_esc_sequences(&output)))
+    }
+}
+
+fn copy_pass(filter: impl AsRef<str>) -> Result<(), String> {
+    let cmd = process::Command::new("pass")
+        .arg("-c")
+        .arg(filter.as_ref())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = cmd.wait_with_output().unwrap();
+    if out.status.code().unwrap() == 0 {
+        Ok(())
+    } else {
+        Err(String::from_utf8(out.stderr).unwrap())
     }
 }
 
