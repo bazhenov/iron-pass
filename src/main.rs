@@ -6,11 +6,12 @@ use druid::{
     AppDelegate, AppLauncher, Code, Color, Command, Data, DelegateCtx, Handled, Lens, Selector,
     Target, Widget, WidgetExt, WindowDesc,
 };
-use regex::Regex;
 use std::{
     cmp::Ordering,
+    env,
     ops::Deref,
     process::{self, Stdio},
+    result::Result,
     sync::Arc,
 };
 
@@ -54,6 +55,7 @@ impl<T: Data> Deref for Selected<T> {
 }
 
 fn main() {
+    init_env_vars().unwrap();
     let all_items = Arc::new(list_pass("").unwrap_or_default());
     let main_window = WindowDesc::new(ui_builder())
         .title("Iron Pass")
@@ -203,13 +205,8 @@ fn make_pass_item() -> impl Widget<Selected<String>> {
     )
 }
 
-fn strip_esc_sequences(input: &str) -> String {
-    let re = Regex::new(r"\x1B\[([0-9;]*[mGKH])").unwrap();
-    re.replace_all(input, "").to_string()
-}
-
 fn list_pass(filter: impl AsRef<str>) -> Option<Vec<String>> {
-    let cmd = process::Command::new("pass")
+    let cmd = process::Command::new("/opt/homebrew/bin/pass")
         .arg("find")
         .arg(filter.as_ref())
         .stdin(Stdio::null())
@@ -221,8 +218,8 @@ fn list_pass(filter: impl AsRef<str>) -> Option<Vec<String>> {
     if out.status.code().unwrap() == 1 {
         None
     } else {
-        let output = String::from_utf8(out.stdout).unwrap();
-        Some(parse_list(&strip_esc_sequences(&output)))
+        let output = String::from_utf8_lossy(out.stdout.as_slice());
+        Some(parse_list(&strip_ansi_escapes::strip_str(output)))
     }
 }
 
@@ -303,6 +300,57 @@ fn parse_list(output: &str) -> Vec<String> {
     result
 }
 
+pub fn init_env_vars() -> Result<(), Error> {
+    let default_shell = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/sh"
+    };
+    let shell = env::var("SHELL").unwrap_or_else(|_| default_shell.into());
+
+    let out = process::Command::new(shell)
+        .arg("-ilc")
+        .arg("echo -n '_SHELL_ENV_DELIMITER_'; env; echo -n '_SHELL_ENV_DELIMITER_'; exit")
+        // Disables Oh My Zsh auto-update thing that can block the process.
+        .env("DISABLE_AUTO_UPDATE", "true")
+        // Closing stdin to prevent from programs to block on init
+        .stdin(Stdio::null())
+        .output()
+        .map_err(Error::Shell)?;
+
+    if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let env = stdout
+            .split("_SHELL_ENV_DELIMITER_")
+            .nth(1)
+            .ok_or_else(|| Error::InvalidOutput(stdout.clone()))?;
+        for line in String::from_utf8_lossy(&strip_ansi_escapes::strip(env))
+            .lines()
+            .filter(|l| !l.is_empty())
+        {
+            let mut s = line.splitn(2, '=');
+            if let Some((var, value)) = s.next().zip(s.next()) {
+                env::set_var(var, value);
+            }
+        }
+        Ok(())
+    } else {
+        Err(Error::EchoFailed(
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error(transparent)]
+    Shell(#[from] std::io::Error),
+    #[error("invalid output from shell echo: {0}")]
+    InvalidOutput(String),
+    #[error("failed to run shell echo: {0}")]
+    EchoFailed(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +377,6 @@ mod tests {
     #[test]
     fn check_escape_sequence_remove() {
         let input = "This is \x1b[31mred\x1b[0m text";
-        assert_eq!(strip_esc_sequences(input), "This is red text")
+        assert_eq!(strip_ansi_escapes::strip_str(input), "This is red text")
     }
 }

@@ -2,7 +2,17 @@
 name = "iron-pass"
 version = "0.1.0"
 edition = "2021"
+description = "GNU Pass UI"
 
 [dependencies]
 druid = "0.8.3"
-regex = "1.10.4"
+strip-ansi-escapes = "0.2.0"
+thiserror = "1.0.61"
+
+[package.metadata.bundle]
+name = "Iron Pass"
+identifier = "me.bazhenov.iron-pass"
+icon = ["assets/32x32.png", "assets/128x128.png", "assets/128x128@2.png"]
+version = "0.1.0"
+copyright = "Copyright (c) Denis Bazhenov 2024. All rights reserved."
+short_description = "GNU Pass UI"
